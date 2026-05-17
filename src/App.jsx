@@ -770,7 +770,6 @@ export default function App() {
         <MetricCard label="Total Collected" value={formatMoney(totals.collected)} />
         <MetricCard label="Total Expense" value={formatMoney(totals.spent)} />
         <MetricCard label="Total Balance" value={formatMoney(totals.closingBalance)} />
-        <MetricCard label="Pending Amount" value={formatMoney(totals.pendingAmount)} />
         <MetricCard label="Active Members" value={totals.activeCount} />
       </section>
 
@@ -1269,9 +1268,22 @@ function ReportPage({ title, records, emptyText, showBirthDate = false, canEdit 
 }
 
 function BirthdayBanner({ birthdayFor, month, birthdayEmployees }) {
-  const names = birthdayEmployees.length > 0
-    ? birthdayEmployees.map((record) => record.name).join(', ')
-    : birthdayFor;
+  let names = '';
+  
+  const formatList = (list) => {
+    if (list.length === 0) return '';
+    if (list.length === 1) return list[0];
+    const items = [...list];
+    const last = items.pop();
+    return `${items.join(', ')} & ${last}`;
+  };
+
+  if (birthdayEmployees.length > 0) {
+    names = formatList(birthdayEmployees.map((record) => record.name));
+  } else {
+    const fallbackNames = birthdayFor.split(/,|&|and|\+/).map((n) => n.trim()).filter(Boolean);
+    names = formatList(fallbackNames);
+  }
 
   return (
     <section className="birthday-banner-page">
