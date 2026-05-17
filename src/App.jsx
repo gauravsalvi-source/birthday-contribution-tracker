@@ -916,18 +916,16 @@ export default function App() {
           </nav>
 
           <div className="formula-strip">
-            <span>Total Contribution</span>
+            <span>Opening Balance</span>
+            <strong>{formatMoney(totals.openingBalance)}</strong>
+            <span>+ Total Collected</span>
             <strong>{formatMoney(totals.collected)}</strong>
-            <span>+ Pending</span>
-            <strong>{formatMoney(totals.pendingAmount)}</strong>
             <span>- Total Expense</span>
             <strong>{formatMoney(totals.spent)}</strong>
-            <span>+ Opening Balance</span>
-            <strong>{formatMoney(totals.openingBalance)}</strong>
-            <span>= Expected Closing Balance</span>
-            <strong className={totals.expectedBalance < 0 ? 'negative' : 'positive'}>{formatMoney(totals.expectedBalance)}</strong>
-            <span>Active Members</span>
-            <strong>{totals.activeCount}</strong>
+            <span>= Total Balance</span>
+            <strong className={totals.closingBalance < 0 ? 'negative' : 'positive'}>{formatMoney(totals.closingBalance)}</strong>
+            <span>(Pending Amount:</span>
+            <strong>{formatMoney(totals.pendingAmount)})</strong>
           </div>
 
           {activeView === 'records' ? (
