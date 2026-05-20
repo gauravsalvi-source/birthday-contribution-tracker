@@ -2,6 +2,7 @@ services:
   - type: web
     name: birthday-tracker
     runtime: node
+  installCommand: npm install --include=dev
     buildCommand: npm run build
     startCommand: node server/server.js
     envVars:
