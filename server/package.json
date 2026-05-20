@@ -1,0 +1,12 @@
+{
+  "name": "birthday-contribution-tracker-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "pg": "^8.11.5",
+    "sqlite3": "^5.1.7"
+  }
+}

@@ -1,7 +1,7 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
-const STORAGE_KEY = 'birthday-contribution-records-react-v3';
-const EXPENSE_STORAGE_KEY = 'birthday-contribution-expenses-react-v1';
+const STORAGE_KEY = 'birthday-contribution-records-react-v5';
+const EXPENSE_STORAGE_KEY = 'birthday-contribution-expenses-react-v3';
 const defaultBirthdayMonth = '2026-05';
 const defaultBirthdayFor = 'Sumit, Lalit & Bhakti';
 const contributionStatuses = ['Paid', 'Pending', 'Exempted', 'NA'];
@@ -150,12 +150,21 @@ function cloneZeroedRecords() {
 function loadRecords() {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
+
     if (!saved) {
       return cloneDefaultRecords();
     }
+
     const parsed = JSON.parse(saved);
-    return Array.isArray(parsed) ? parsed.map(normalizeRecord) : cloneDefaultRecords();
-  } catch {
+
+    if (!Array.isArray(parsed)) {
+      return cloneDefaultRecords();
+    }
+
+    return parsed.map(normalizeRecord);
+
+  } catch (error) {
+    console.log('Record load error:', error);
     return cloneDefaultRecords();
   }
 }
@@ -306,17 +315,62 @@ function buildCsv(records) {
 }
 
 export default function App() {
-  const [records, setRecords] = useState(loadRecords);
-  const [expenses, setExpenses] = useState(loadExpenses);
+  const [records, setRecords] = useState([]);
+  const [expenses, setExpenses] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [form, setForm] = useState(blankForm);
   const [expenseForm, setExpenseForm] = useState(blankExpenseForm);
   const [monthForm, setMonthForm] = useState(blankMonthForm);
   const [search, setSearch] = useState('');
-  const [activeMonth, setActiveMonth] = useState(() => loadRecords()[0]?.birthdayMonth || defaultBirthdayMonth);
+  const [activeMonth, setActiveMonth] = useState(defaultBirthdayMonth);
   const [activeView, setActiveView] = useState('records');
   const [isManagerMode, setIsManagerMode] = useState(false);
   const [managerPasswordInput, setManagerPasswordInput] = useState('');
   const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  async function fetchData() {
+    try {
+      setLoading(true);
+      const response = await fetch('/api/data');
+      if (!response.ok) {
+        throw new Error('Failed to fetch data from the server');
+      }
+      const data = await response.json();
+      setRecords(data.records || []);
+      setExpenses(data.expenses || []);
+      
+      const combinedRecords = data.records || [];
+      if (combinedRecords.length > 0) {
+        const months = Array.from(new Set(combinedRecords.map((r) => r.birthdayMonth))).filter(Boolean);
+        const sorted = months.sort((a, b) => b.localeCompare(a));
+        if (sorted.length > 0) {
+          setActiveMonth(sorted[0]);
+        }
+      }
+      setError(null);
+    } catch (err) {
+      console.error('Error loading backend data:', err);
+      setError('Could not connect to the backend server. Using local storage instead.');
+      const localRecs = loadRecords();
+      const localExps = loadExpenses();
+      setRecords(localRecs);
+      setExpenses(localExps);
+      if (localRecs && localRecs.length > 0) {
+        const months = Array.from(new Set(localRecs.map((r) => r.birthdayMonth))).filter(Boolean);
+        const sorted = months.sort((a, b) => b.localeCompare(a));
+        if (sorted.length > 0) {
+          setActiveMonth(sorted[0]);
+        }
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
 
   const monthTabs = useMemo(() => {
     const months = Array.from(new Set(records.map((record) => record.birthdayMonth))).filter(Boolean);
@@ -458,7 +512,7 @@ export default function App() {
     });
   }
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     event.preventDefault();
 
     const record = normalizeRecord(form);
@@ -467,18 +521,43 @@ export default function App() {
       return;
     }
 
-    const existingIndex = records.findIndex((item) => item.id === record.id);
-    const nextRecords = existingIndex >= 0
-      ? records.map((item) => (item.id === record.id ? record : item))
-      : [...records, record];
+    try {
+      const response = await fetch('/api/records', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(record),
+      });
+      if (!response.ok) throw new Error('Failed to save record on server');
+      const savedRecord = await response.json();
 
-    commitRecords(nextRecords);
-    setActiveMonth(record.birthdayMonth);
-    setForm({
-      ...blankForm,
-      birthdayMonth: record.birthdayMonth,
-      birthdayFor: record.birthdayFor,
-    });
+      const existingIndex = records.findIndex((item) => item.id === savedRecord.id);
+      const nextRecords = existingIndex >= 0
+        ? records.map((item) => (item.id === savedRecord.id ? savedRecord : item))
+        : [...records, savedRecord];
+
+      commitRecords(nextRecords);
+      setActiveMonth(savedRecord.birthdayMonth);
+      setForm({
+        ...blankForm,
+        birthdayMonth: savedRecord.birthdayMonth,
+        birthdayFor: savedRecord.birthdayFor,
+      });
+    } catch (err) {
+      console.error(err);
+      // fallback to offline save if server is unreachable
+      const existingIndex = records.findIndex((item) => item.id === record.id);
+      const nextRecords = existingIndex >= 0
+        ? records.map((item) => (item.id === record.id ? record : item))
+        : [...records, record];
+      commitRecords(nextRecords);
+      setActiveMonth(record.birthdayMonth);
+      setForm({
+        ...blankForm,
+        birthdayMonth: record.birthdayMonth,
+        birthdayFor: record.birthdayFor,
+      });
+      alert('Note: Saved locally. Failed to sync with server.');
+    }
   }
 
   function editRecord(record) {
@@ -494,21 +573,47 @@ export default function App() {
     });
   }
 
-  function handleExpenseSubmit(event) {
+  async function handleExpenseSubmit(event) {
     event.preventDefault();
     const expense = normalizeExpense(expenseForm);
-    const existingIndex = expenses.findIndex((item) => item.id === expense.id);
-    const nextExpenses = existingIndex >= 0
-      ? expenses.map((item) => (item.id === expense.id ? expense : item))
-      : [...expenses, expense];
 
-    commitExpenses(nextExpenses);
-    setActiveMonth(expense.birthdayMonth);
-    setExpenseForm({
-      ...blankExpenseForm,
-      birthdayMonth: expense.birthdayMonth,
-      birthdayFor: expense.birthdayFor,
-    });
+    try {
+      const response = await fetch('/api/expenses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(expense),
+      });
+      if (!response.ok) throw new Error('Failed to save expense on server');
+      const savedExpense = await response.json();
+
+      const existingIndex = expenses.findIndex((item) => item.id === savedExpense.id);
+      const nextExpenses = existingIndex >= 0
+        ? expenses.map((item) => (item.id === savedExpense.id ? savedExpense : item))
+        : [...expenses, savedExpense];
+
+      commitExpenses(nextExpenses);
+      setActiveMonth(savedExpense.birthdayMonth);
+      setExpenseForm({
+        ...blankExpenseForm,
+        birthdayMonth: savedExpense.birthdayMonth,
+        birthdayFor: savedExpense.birthdayFor,
+      });
+    } catch (err) {
+      console.error(err);
+      // offline fallback
+      const existingIndex = expenses.findIndex((item) => item.id === expense.id);
+      const nextExpenses = existingIndex >= 0
+        ? expenses.map((item) => (item.id === expense.id ? expense : item))
+        : [...expenses, expense];
+      commitExpenses(nextExpenses);
+      setActiveMonth(expense.birthdayMonth);
+      setExpenseForm({
+        ...blankExpenseForm,
+        birthdayMonth: expense.birthdayMonth,
+        birthdayFor: expense.birthdayFor,
+      });
+      alert('Note: Saved expense locally. Failed to sync with server.');
+    }
   }
 
   function editExpense(expense) {
@@ -521,63 +626,141 @@ export default function App() {
     });
   }
 
-  function deleteExpense(expense) {
+  async function deleteExpense(expense) {
     if (!confirm(`Delete expense "${expense.item}"?`)) {
       return;
     }
-    commitExpenses(expenses.filter((item) => item.id !== expense.id));
-    if (expenseForm.id === expense.id) {
-      resetExpenseForm();
+
+    try {
+      const response = await fetch(`/api/expenses/${expense.id}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) throw new Error('Failed to delete expense on server');
+
+      const nextExpenses = expenses.filter((item) => item.id !== expense.id);
+      commitExpenses(nextExpenses);
+      if (expenseForm.id === expense.id) {
+        resetExpenseForm();
+      }
+    } catch (err) {
+      console.error(err);
+      // offline fallback
+      const nextExpenses = expenses.filter((item) => item.id !== expense.id);
+      commitExpenses(nextExpenses);
+      if (expenseForm.id === expense.id) {
+        resetExpenseForm();
+      }
+      alert('Note: Deleted locally. Failed to sync with server.');
     }
   }
 
-  function resetData() {
+  async function resetData() {
     if (!confirm(`Reset ${formatMonthLabel(activeMonth)} contribution and expense amounts to 0?`)) {
       return;
     }
 
-    const zeroedMonthRecords = monthlyRecords.map((record) => normalizeRecord({
-      ...record,
-      status: 'Pending',
-      contribution: 0,
-      statusRemark: '',
-      note: '',
-    }));
-    const nextRecords = records.map((record) => {
-      const replacement = zeroedMonthRecords.find((item) => item.id === record.id);
-      return replacement || record;
-    });
-    commitRecords(nextRecords);
-    commitExpenses(expenses.filter((expense) => expense.birthdayMonth !== activeMonth));
-    resetForm();
-    resetExpenseForm();
-    setSearch('');
+    try {
+      const response = await fetch(`/api/records/reset/${activeMonth}`, {
+        method: 'POST',
+      });
+      if (!response.ok) throw new Error('Failed to reset month data on server');
+
+      const zeroedMonthRecords = monthlyRecords.map((record) => normalizeRecord({
+        ...record,
+        status: 'Pending',
+        contribution: 0,
+        statusRemark: '',
+        note: '',
+      }));
+      const nextRecords = records.map((record) => {
+        const replacement = zeroedMonthRecords.find((item) => item.id === record.id);
+        return replacement || record;
+      });
+      const nextExpenses = expenses.filter((expense) => expense.birthdayMonth !== activeMonth);
+
+      commitRecords(nextRecords);
+      commitExpenses(nextExpenses);
+
+      resetForm();
+      resetExpenseForm();
+      setSearch('');
+    } catch (err) {
+      console.error(err);
+      // offline fallback
+      const zeroedMonthRecords = monthlyRecords.map((record) => normalizeRecord({
+        ...record,
+        status: 'Pending',
+        contribution: 0,
+        statusRemark: '',
+        note: '',
+      }));
+      const nextRecords = records.map((record) => {
+        const replacement = zeroedMonthRecords.find((item) => item.id === record.id);
+        return replacement || record;
+      });
+      commitRecords(nextRecords);
+      commitExpenses(expenses.filter((expense) => expense.birthdayMonth !== activeMonth));
+      resetForm();
+      resetExpenseForm();
+      setSearch('');
+      alert('Note: Reset locally. Failed to sync with server.');
+    }
   }
 
-  function deleteActiveMonth() {
+  async function deleteActiveMonth() {
     if (!confirm(`Delete ${formatMonthLabel(activeMonth)} and all its records and expenses?`)) {
       return;
     }
 
-    const nextRecords = records.filter((record) => record.birthdayMonth !== activeMonth);
-    const nextExpenses = expenses.filter((expense) => expense.birthdayMonth !== activeMonth);
-    const nextActiveMonth = nextRecords[0]?.birthdayMonth || defaultBirthdayMonth;
+    try {
+      const response = await fetch(`/api/records/month/${activeMonth}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) throw new Error('Failed to delete month from server');
 
-    commitRecords(nextRecords);
-    commitExpenses(nextExpenses);
-    setActiveMonth(nextActiveMonth);
-    setActiveView('records');
-    setSearch('');
-    setForm({
-      ...blankForm,
-      birthdayMonth: nextActiveMonth,
-      birthdayFor: nextRecords.find((record) => record.birthdayMonth === nextActiveMonth)?.birthdayFor || defaultBirthdayFor,
-    });
-    setExpenseForm({
-      ...blankExpenseForm,
-      birthdayMonth: nextActiveMonth,
-      birthdayFor: nextRecords.find((record) => record.birthdayMonth === nextActiveMonth)?.birthdayFor || defaultBirthdayFor,
-    });
+      const nextRecords = records.filter((record) => record.birthdayMonth !== activeMonth);
+      const nextExpenses = expenses.filter((expense) => expense.birthdayMonth !== activeMonth);
+      const nextActiveMonth = nextRecords[0]?.birthdayMonth || defaultBirthdayMonth;
+
+      commitRecords(nextRecords);
+      commitExpenses(nextExpenses);
+      setActiveMonth(nextActiveMonth);
+      setActiveView('records');
+      setSearch('');
+      setForm({
+        ...blankForm,
+        birthdayMonth: nextActiveMonth,
+        birthdayFor: nextRecords.find((record) => record.birthdayMonth === nextActiveMonth)?.birthdayFor || defaultBirthdayFor,
+      });
+      setExpenseForm({
+        ...blankExpenseForm,
+        birthdayMonth: nextActiveMonth,
+        birthdayFor: nextRecords.find((record) => record.birthdayMonth === nextActiveMonth)?.birthdayFor || defaultBirthdayFor,
+      });
+    } catch (err) {
+      console.error(err);
+      // offline fallback
+      const nextRecords = records.filter((record) => record.birthdayMonth !== activeMonth);
+      const nextExpenses = expenses.filter((expense) => expense.birthdayMonth !== activeMonth);
+      const nextActiveMonth = nextRecords[0]?.birthdayMonth || defaultBirthdayMonth;
+
+      commitRecords(nextRecords);
+      commitExpenses(nextExpenses);
+      setActiveMonth(nextActiveMonth);
+      setActiveView('records');
+      setSearch('');
+      setForm({
+        ...blankForm,
+        birthdayMonth: nextActiveMonth,
+        birthdayFor: nextRecords.find((record) => record.birthdayMonth === nextActiveMonth)?.birthdayFor || defaultBirthdayFor,
+      });
+      setExpenseForm({
+        ...blankExpenseForm,
+        birthdayMonth: nextActiveMonth,
+        birthdayFor: nextRecords.find((record) => record.birthdayMonth === nextActiveMonth)?.birthdayFor || defaultBirthdayFor,
+      });
+      alert('Note: Deleted locally. Failed to sync with server.');
+    }
   }
 
   function switchMonth(month) {
@@ -596,7 +779,7 @@ export default function App() {
     });
   }
 
-  function createMonth(event) {
+  async function createMonth(event) {
     event.preventDefault();
 
     const birthdayMonth = monthForm.birthdayMonth;
@@ -615,26 +798,60 @@ export default function App() {
     }
 
     const newMonthRecords = buildMonthRecords(birthdayMonth, birthdayFor);
-    const nextRecords = [...records, ...newMonthRecords];
 
-    commitRecords(nextRecords);
-    setActiveMonth(birthdayMonth);
-    setActiveView('records');
-    setSearch('');
-    setForm({
-      ...blankForm,
-      birthdayMonth,
-      birthdayFor,
-    });
-    setExpenseForm({
-      ...blankExpenseForm,
-      birthdayMonth,
-      birthdayFor,
-    });
-    setMonthForm({
-      birthdayMonth,
-      birthdayFor: '',
-    });
+    try {
+      const response = await fetch('/api/records/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newMonthRecords),
+      });
+      if (!response.ok) throw new Error('Failed to create month on server');
+      const savedRecords = await response.json();
+
+      const nextRecords = [...records, ...savedRecords];
+      commitRecords(nextRecords);
+
+      setActiveMonth(birthdayMonth);
+      setActiveView('records');
+      setSearch('');
+      setForm({
+        ...blankForm,
+        birthdayMonth,
+        birthdayFor,
+      });
+      setExpenseForm({
+        ...blankExpenseForm,
+        birthdayMonth,
+        birthdayFor,
+      });
+      setMonthForm({
+        birthdayMonth,
+        birthdayFor: '',
+      });
+    } catch (err) {
+      console.error(err);
+      // offline fallback
+      const nextRecords = [...records, ...newMonthRecords];
+      commitRecords(nextRecords);
+      setActiveMonth(birthdayMonth);
+      setActiveView('records');
+      setSearch('');
+      setForm({
+        ...blankForm,
+        birthdayMonth,
+        birthdayFor,
+      });
+      setExpenseForm({
+        ...blankExpenseForm,
+        birthdayMonth,
+        birthdayFor,
+      });
+      setMonthForm({
+        birthdayMonth,
+        birthdayFor: '',
+      });
+      alert('Note: Created month sheet locally. Failed to sync with server.');
+    }
   }
 
   function unlockManagerMode(event) {
@@ -677,16 +894,104 @@ export default function App() {
       return;
     }
 
-    commitRecords(importedRecords);
-    setActiveMonth(importedRecords[0].birthdayMonth);
-    setActiveView('records');
-    resetForm();
-    setSearch('');
-    event.target.value = '';
+    try {
+      const response = await fetch('/api/records/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(importedRecords),
+      });
+      if (!response.ok) throw new Error('Failed to bulk save imported records on server');
+      const savedRecords = await response.json();
+
+      commitRecords(savedRecords);
+      setActiveMonth(savedRecords[0].birthdayMonth);
+      setActiveView('records');
+      resetForm();
+      setSearch('');
+      event.target.value = '';
+    } catch (err) {
+      console.error(err);
+      // offline fallback
+      commitRecords(importedRecords);
+      setActiveMonth(importedRecords[0].birthdayMonth);
+      setActiveView('records');
+      resetForm();
+      setSearch('');
+      event.target.value = '';
+      alert('Note: Imported CSV locally. Failed to sync with server.');
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="loading-container" style={{
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'center',
+        alignItems: 'center',
+        height: '100vh',
+        fontFamily: 'system-ui, -apple-system, sans-serif',
+        background: '#f6f4ef',
+        color: '#202124'
+      }}>
+        <div className="spinner" style={{
+          width: '40px',
+          height: '40px',
+          border: '4px solid #e5ded3',
+          borderTop: '4px solid #0f766e',
+          borderRadius: '50%',
+          animation: 'spin 1s linear infinite',
+          marginBottom: '16px'
+        }}></div>
+        <style>{`
+          @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+          }
+        `}</style>
+        <h2 style={{ fontSize: '1.2rem', color: '#4a453e' }}>Loading tracker data...</h2>
+      </div>
+    );
   }
 
   return (
     <main className="app-shell">
+      {error && (
+        <div style={{
+          background: '#fff2f2',
+          border: '1px solid #fca5a5',
+          color: '#991b1b',
+          padding: '12px 16px',
+          borderRadius: '8px',
+          marginBottom: '20px',
+          fontWeight: '600',
+          fontSize: '0.9rem',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          boxShadow: '0 4px 6px rgba(0,0,0,0.05)'
+        }}>
+          <span>⚠️ {error}</span>
+          <button 
+            onClick={fetchData} 
+            style={{ 
+              background: '#991b1b', 
+              color: 'white', 
+              border: 'none', 
+              borderRadius: '6px', 
+              padding: '6px 12px', 
+              cursor: 'pointer',
+              fontSize: '0.8rem',
+              fontWeight: 'bold',
+              transition: 'background 0.2s'
+            }}
+            onMouseOver={(e) => e.target.style.background = '#7f1d1d'}
+            onMouseOut={(e) => e.target.style.background = '#991b1b'}
+          >
+            Retry Connection
+          </button>
+        </div>
+      )}
       <header className="topbar">
         <div>
           <p className="eyebrow">Monthly Team Birthday Fund</p>
@@ -782,98 +1087,98 @@ export default function App() {
 
       <section className={isManagerMode ? 'editor-layout' : 'viewer-layout'}>
         {isManagerMode ? (
-        <form className="form-panel" onSubmit={handleSubmit}>
-          <div className="section-heading">
-            <h2>{form.id ? 'Edit Record' : 'Add Record'}</h2>
-            {form.id ? (
-              <button type="button" className="ghost-button" onClick={resetForm}>
-                Cancel
-              </button>
-            ) : null}
-          </div>
+          <form className="form-panel" onSubmit={handleSubmit}>
+            <div className="section-heading">
+              <h2>{form.id ? 'Edit Record' : 'Add Record'}</h2>
+              {form.id ? (
+                <button type="button" className="ghost-button" onClick={resetForm}>
+                  Cancel
+                </button>
+              ) : null}
+            </div>
 
-          <label>
-            Birthday Month
-            <input
-              type="month"
-              value={form.birthdayMonth}
-              onChange={(event) => updateField('birthdayMonth', event.target.value)}
-              required
-            />
-          </label>
+            <label>
+              Birthday Month
+              <input
+                type="month"
+                value={form.birthdayMonth}
+                onChange={(event) => updateField('birthdayMonth', event.target.value)}
+                required
+              />
+            </label>
 
-          <label>
-            Birthday For
-            <input
-              type="text"
-              placeholder="Teammate birthday name"
-              value={form.birthdayFor}
-              onChange={(event) => updateField('birthdayFor', event.target.value)}
-              required
-            />
-          </label>
+            <label>
+              Birthday For
+              <input
+                type="text"
+                placeholder="Teammate birthday name"
+                value={form.birthdayFor}
+                onChange={(event) => updateField('birthdayFor', event.target.value)}
+                required
+              />
+            </label>
 
-          <label>
-            Team Member Name
-            <input
-              type="text"
-              placeholder="Contributor name"
-              value={form.name}
-              onChange={(event) => updateField('name', event.target.value)}
-              required
-            />
-          </label>
+            <label>
+              Team Member Name
+              <input
+                type="text"
+                placeholder="Contributor name"
+                value={form.name}
+                onChange={(event) => updateField('name', event.target.value)}
+                required
+              />
+            </label>
 
-          <label>
-            Contribution Status
-            <select
-              value={form.status}
-              onChange={(event) => updateField('status', event.target.value)}
-              required
-            >
-              {contributionStatuses.map((status) => (
-                <option key={status} value={status}>{status}</option>
-              ))}
-            </select>
-          </label>
+            <label>
+              Contribution Status
+              <select
+                value={form.status}
+                onChange={(event) => updateField('status', event.target.value)}
+                required
+              >
+                {contributionStatuses.map((status) => (
+                  <option key={status} value={status}>{status}</option>
+                ))}
+              </select>
+            </label>
 
-          <label>
-            Contribution Amount
-            <input
-              type="number"
-              min="0"
-              step="1"
-              placeholder="100"
-              value={form.contribution}
-              onChange={(event) => updateField('contribution', event.target.value)}
-              disabled={form.status === 'NA' || form.status === 'Exempted'}
-              required
-            />
-          </label>
+            <label>
+              Contribution Amount
+              <input
+                type="number"
+                min="0"
+                step="1"
+                placeholder="100"
+                value={form.contribution}
+                onChange={(event) => updateField('contribution', event.target.value)}
+                disabled={form.status === 'NA' || form.status === 'Exempted'}
+                required
+              />
+            </label>
 
-          <label>
-            Birth Date
-            <input
-              type="date"
-              value={form.birthDate}
-              onChange={(event) => updateField('birthDate', event.target.value)}
-            />
-          </label>
+            <label>
+              Birth Date
+              <input
+                type="date"
+                value={form.birthDate}
+                onChange={(event) => updateField('birthDate', event.target.value)}
+              />
+            </label>
 
-          <label>
-            Note
-            <input
-              type="text"
-              placeholder="Optional"
-              value={form.note}
-              onChange={(event) => updateField('note', event.target.value)}
-            />
-          </label>
+            <label>
+              Note
+              <input
+                type="text"
+                placeholder="Optional"
+                value={form.note}
+                onChange={(event) => updateField('note', event.target.value)}
+              />
+            </label>
 
-          <button type="submit" className="primary-button">
-            Save Record
-          </button>
-        </form>
+            <button type="submit" className="primary-button">
+              Save Record
+            </button>
+          </form>
         ) : null}
 
         <section className="records-panel">
@@ -1060,11 +1365,11 @@ function RecordRow({ record, onEdit, canEdit }) {
       <td className="number-cell muted-cell">-</td>
       {canEdit ? (
         <td>
-        <div className="actions">
-          <button type="button" className="action-button" onClick={() => onEdit(record)}>
-            Edit
-          </button>
-        </div>
+          <div className="actions">
+            <button type="button" className="action-button" onClick={() => onEdit(record)}>
+              Edit
+            </button>
+          </div>
         </td>
       ) : null}
     </tr>
@@ -1267,7 +1572,7 @@ function ReportPage({ title, records, emptyText, showBirthDate = false, canEdit 
 
 function BirthdayBanner({ birthdayFor, month, birthdayEmployees }) {
   let names = '';
-  
+
   const formatList = (list) => {
     if (list.length === 0) return '';
     if (list.length === 1) return list[0];
