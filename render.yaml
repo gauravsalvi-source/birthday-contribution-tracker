@@ -5,8 +5,7 @@ services:
   installCommand: npm install --include=dev
     buildCommand: npm run build
     startCommand: node server/server.js
+postDeployCommand: node server/seedMay2026.js
     envVars:
-      - key: NODE_ENV
-        value: production
       - key: DATABASE_URL
-        value: ""
+        value: "${DATABASE_URL}"
